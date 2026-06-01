@@ -1,0 +1,64 @@
+#pragma once
+
+#include <cstdio>
+#include <cstring>
+
+#include "Core.h"
+
+/**
+ * Test fixture that creates and wires all VFS subsystems.
+ * Usage:
+ *   VfsFixture fx;
+ *   fx.format();           // create fresh disk
+ *   fx.balloc();           // allocate a block
+ */
+struct VfsFixture {
+    filsys           superblock{};
+    VirtualDisk      disk;
+    BlockManager     blocks{disk, superblock};
+    InodeCache       icache{disk, blocks};
+    DirectoryManager dirs{disk, icache, blocks};
+    FileOperator     files{disk, blocks, icache, dirs, superblock};
+    UserManager      users{disk, icache, dirs, files, superblock};
+
+    VfsFixture() {
+        fs_cleanup();
+    }
+
+    ~VfsFixture() {
+        fs_cleanup();
+    }
+
+    void format() {
+        disk.format(superblock);
+    }
+
+    void install() {
+        disk.install(superblock);
+        // Re-init inode hash chains
+        for (int i = 0; i < NHINO; i++) {
+            icache.hash_table()[i].i_forw = nullptr;
+        }
+        // Load password file into user table
+        users.load_password_file();
+    }
+
+    void load_root_dir() {
+        inode* root = icache.iget(1);
+        if (root) {
+            dirs.set_cur_path_inode(root);
+            char block[BLOCKSIZ];
+            memset(block, 0, BLOCKSIZ);
+            fseek(disk.handle(), DATASTART + root->di_addr[0] * BLOCKSIZ, SEEK_SET);
+            fread(block, BLOCKSIZ, 1, disk.handle());
+            int n = root->di_size / sizeof(direct);
+            if (n > (int)(BLOCKSIZ / sizeof(direct))) n = BLOCKSIZ / sizeof(direct);
+            memcpy(dirs.current_dir().direct, block, n * sizeof(direct));
+            dirs.current_dir().size = n;
+        }
+    }
+
+    static void fs_cleanup() {
+        std::remove("filesystem");
+    }
+};
