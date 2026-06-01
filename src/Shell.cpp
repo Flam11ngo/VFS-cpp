@@ -51,9 +51,23 @@ uint32_t Shell::file_size(int fd)
 
 std::string Shell::editor_read()
 {
-    std::cout << "  (enter text, blank line to finish)\n";
-    std::string line, buf;
+    return editor_read("");
+}
+
+std::string Shell::editor_read(const std::string& existing)
+{
+    // Display existing content (read-only, for reference)
     int ln = 1;
+    if (!existing.empty()) {
+        std::cout << "  --- file content ---\n";
+        std::istringstream iss(existing);
+        std::string line;
+        while (std::getline(iss, line))
+            std::cout << "  " << ln++ << "| " << line << "\n";
+    }
+    // Read new input only — existing is NOT included in result
+    std::cout << "  (enter text, blank line to finish)\n";
+    std::string buf, line;
     while (true) {
         std::cout << "  " << ln++ << "| ";
         if (!std::getline(std::cin, line)) break;
@@ -62,6 +76,67 @@ std::string Shell::editor_read()
         buf += line;
     }
     return buf;
+}
+
+// ====== Path helpers ======
+
+/** Split a path like "a/b/c/f.txt" into directory components + final filename.
+ *  Auto-creates missing directories via mkdir.  Changes cwd along the way.
+ *  Returns the filename (last component).  Caller must chdir("..") depth times
+ *  to restore the original directory. */
+static std::pair<std::string, int> resolve_path(const std::string& path)
+{
+    auto& dirs = g_core.dirs();
+
+    // Split by '/'
+    std::vector<std::string> parts;
+    std::istringstream iss(path);
+    std::string token;
+    while (std::getline(iss, token, '/'))
+        parts.push_back(token);
+
+    if (parts.empty()) return {"", 0};
+
+    int depth = 0;
+    // All components except the last are directories
+    for (size_t i = 0; i + 1 < parts.size(); i++) {
+        if (dirs.namei(parts[i].c_str()) == (unsigned int)-1) {
+            // Directory doesn't exist — create it
+            dirs.mkdir(parts[i].c_str(), 0);
+        }
+        dirs.chdir(parts[i].c_str());
+        depth++;
+    }
+
+    return {parts.back(), depth};
+}
+
+/** chdir("..") depth times to undo resolve_path. */
+static void unwind_path(int depth)
+{
+    for (int i = 0; i < depth; i++)
+        g_core.dirs().chdir("..");
+}
+
+/** Open, read entire content, close.  Returns empty string on failure. */
+static std::string read_entire_file(const std::string& name)
+{
+    auto& files = g_core.files();
+    auto& users = g_core.users();
+
+    uint16_t fd = files.open(users.current_user(), name.c_str(), FREAD);
+    if (fd == static_cast<uint16_t>(-1)) return {};
+
+    uint32_t size = Shell::file_size(fd);
+    if (size == 0) { files.close(users.current_user(), fd); return {}; }
+
+    char* buf = new char[size + 1];
+    memset(buf, 0, size + 1);
+    uint32_t n = files.read(users.current_user(), fd, buf, size);
+    std::string result(buf, n);
+    delete[] buf;
+    files.close(users.current_user(), fd);
+    return result;
 }
 
 // ====== Helpers ======
@@ -88,7 +163,7 @@ static void show_help()
         << "  open  <name> [mode]          Open file    (default mode 1=read)\n"
         << "  close <name>                 Close file\n"
         << "  read  <name> [size]          Read file   (default: all bytes)\n"
-        << "  write <name> [text ...]      Write file  (no text → editor)\n"
+        << "  write [-o] <name> [text]     Append / overwrite file\n"
         << "  delete <name>                Delete file\n"
         << "  format                       Format disk\n"
         << "  halt | exit | quit           Shutdown\n";
@@ -207,15 +282,17 @@ void Shell::run()
             unsigned long mode = DEFAULTMODE;
             if (args.size() >= 3 && !parse_uint(args[2], mode)) continue;
 
-            int fd = files.creat(users.current_user(), args[1].c_str(),
+            auto [fname, depth] = resolve_path(args[1]);
+            int fd = files.creat(users.current_user(), fname.c_str(),
                                  static_cast<uint16_t>(mode));
             if (fd >= 0) {
-                bind_fd(args[1], fd);
-                std::cout << "  Created '" << args[1] << "'  fd=" << fd
+                bind_fd(fname, fd);
+                std::cout << "  Created '" << fname << "'  fd=" << fd
                           << "  mode=" << std::oct << mode << std::dec << "\n";
             } else {
                 std::cout << "  creat failed.\n";
             }
+            unwind_path(depth);
         }
 
         // ============================================================
@@ -266,84 +343,159 @@ void Shell::run()
                 std::cout << "Usage: read <filename> [size]\n";
                 continue;
             }
-            int fd = lookup_fd(args[1]);
+            auto [fname, depth] = resolve_path(args[1]);
+
+            int fd = lookup_fd(fname);
             if (fd < 0) {
-                // Auto-open with read mode
-                uint16_t new_fd = files.open(users.current_user(), args[1].c_str(), FREAD);
+                uint16_t new_fd = files.open(users.current_user(), fname.c_str(), FREAD);
                 if (new_fd == static_cast<uint16_t>(-1)) {
-                    std::cout << "  Cannot open '" << args[1] << "' for reading.\n";
+                    std::cout << "  Cannot open '" << fname << "' for reading.\n";
+                    unwind_path(depth);
                     continue;
                 }
                 fd = new_fd;
-                bind_fd(args[1], fd);
-                std::cout << "  (auto-opened '" << args[1] << "' fd=" << fd << ")\n";
+                bind_fd(fname, fd);
+                std::cout << "  (auto-opened '" << fname << "' fd=" << fd << ")\n";
             }
 
-            uint32_t size = file_size(fd);          // default: whole file
+            uint32_t max_size = file_size(fd);
             if (args.size() >= 3) {
                 unsigned long s = 0;
-                if (!parse_uint(args[2], s)) continue;
-                size = static_cast<uint32_t>(s);
+                if (!parse_uint(args[2], s)) {
+                    files.close(users.current_user(), static_cast<uint16_t>(fd));
+                    unbind_fd(fname);
+                    unwind_path(depth);
+                    continue;
+                }
+                max_size = static_cast<uint32_t>(s);
             }
 
-            if (size == 0) {
+            if (max_size == 0) {
                 std::cout << "  (empty file)\n";
+                files.close(users.current_user(), static_cast<uint16_t>(fd));
+                unbind_fd(fname);
+                unwind_path(depth);
                 continue;
             }
 
-            char* buf = new char[size + 1];
-            memset(buf, 0, size + 1);
-            uint32_t n = files.read(users.current_user(),
-                                    static_cast<uint32_t>(fd), buf, size);
-            std::cout << "  [" << n << " bytes]  ";
-            for (uint32_t i = 0; i < n; i++) std::cout << buf[i];
-            std::cout << "\n";
-            delete[] buf;
+            std::string content;
+            content.reserve(max_size);
+            uint32_t total_read = 0;
+            while (total_read < max_size) {
+                char chunk[BLOCKSIZ];
+                uint32_t ask = max_size - total_read;
+                if (ask > BLOCKSIZ) ask = BLOCKSIZ;
+                uint32_t n = files.read(users.current_user(),
+                                        static_cast<uint32_t>(fd), chunk, ask);
+                if (n == 0) break;
+                content.append(chunk, n);
+                total_read += n;
+            }
+
+            std::cout << "  \n";
+            std::istringstream iss(content);
+            std::string line;
+            int ln = 1;
+            while (std::getline(iss, line))
+                std::cout << "  " << ln++ << "| " << line << "\n";
+            if (!content.empty() && content.back() == '\n')
+                std::cout << "  " << ln++ << "| \n";
+            std::cout << "  \n";
+
+            files.close(users.current_user(), static_cast<uint16_t>(fd));
+            unbind_fd(fname);
+            unwind_path(depth);
         }
 
         // ============================================================
-        //  write  <name>  [text ...]
+        //  write  [-o]  <name>  [text ...]
         // ============================================================
         else if (cmd == "write") {
-            if (args.size() < 2) {
-                std::cout << "Usage: write <filename> [text ...]\n";
+            // Parse flags
+            bool overwrite = false;
+            size_t name_idx = 1;
+            if (args.size() >= 2 && (args[1] == "-o" || args[1] == "--overwrite")) {
+                overwrite = true;
+                name_idx = 2;
+            }
+
+            if (args.size() <= name_idx) {
+                std::cout << "Usage: write [-o|--overwrite] <filename> [text ...]\n"
+                          << "  Default is append.  -o truncates before writing.\n";
                 continue;
             }
-            int fd = lookup_fd(args[1]);
-            if (fd < 0) {
-                // Auto-open with write mode; create if it doesn't exist
-                uint16_t new_fd = files.open(users.current_user(), args[1].c_str(), FWRITE);
+
+            auto [fname, depth] = resolve_path(args[name_idx]);
+            int fd = lookup_fd(fname);
+
+            if (overwrite) {
+                // Overwrite mode: close if open, creat (truncates), rebind
+                if (fd >= 0) {
+                    files.close(users.current_user(), static_cast<uint16_t>(fd));
+                    unbind_fd(fname);
+                }
+                int cfd = files.creat(users.current_user(), fname.c_str(), DEFAULTMODE);
+                if (cfd < 0) {
+                    std::cout << "  Cannot overwrite '" << fname << "'.\n";
+                    continue;
+                }
+                fd = cfd;
+                bind_fd(fname, fd);
+                std::cout << "  (overwrite mode, fd=" << fd << ")\n";
+            } else {
+                // Append mode: always open fresh with FAPPEND
+                if (fd >= 0) {
+                    files.close(users.current_user(), static_cast<uint16_t>(fd));
+                    unbind_fd(fname);
+                }
+                uint16_t new_fd = files.open(users.current_user(), fname.c_str(),
+                                             FWRITE | FAPPEND);
                 if (new_fd == static_cast<uint16_t>(-1)) {
-                    // Try creat as fallback
-                    int cfd = files.creat(users.current_user(), args[1].c_str(), DEFAULTMODE);
+                    int cfd = files.creat(users.current_user(), fname.c_str(), DEFAULTMODE);
                     if (cfd < 0) {
-                        std::cout << "  Cannot open or create '" << args[1] << "'.\n";
+                        std::cout << "  Cannot open or create '" << fname << "'.\n";
                         continue;
                     }
                     new_fd = static_cast<uint16_t>(cfd);
                 }
                 fd = new_fd;
-                bind_fd(args[1], fd);
-                std::cout << "  (auto-opened '" << args[1] << "' fd=" << fd << ")\n";
+                bind_fd(fname, fd);
             }
 
+            // Gather text
             std::string text;
-            if (args.size() >= 3) {
-                // Text provided on command line — re-join remaining args
-                for (size_t i = 2; i < args.size(); i++) {
-                    if (i > 2) text += ' ';
-                    text += args[i];
+            size_t text_start = name_idx + 1;
+            bool use_editor = (args.size() <= text_start);
+
+            if (use_editor) {
+                if (!overwrite) {
+                    text = editor_read(read_entire_file(fname));
+                } else {
+                    text = editor_read();
                 }
             } else {
-                // No text → enter interactive editor mode
-                text = editor_read();
+                for (size_t i = text_start; i < args.size(); i++) {
+                    if (i > text_start) text += ' ';
+                    text += args[i];
+                }
+            }
+
+            // Ensure newline gap when appending to a file without trailing \n
+            if (!overwrite && !text.empty()) {
+                std::string existing = read_entire_file(fname);
+                if (!existing.empty() && existing.back() != '\n')
+                    text.insert(0, "\n");
             }
 
             uint32_t n = files.write(users.current_user(),
                                      static_cast<uint32_t>(fd),
                                      text.c_str(),
                                      static_cast<uint32_t>(text.size()));
-            std::cout << "  Written " << n << " bytes to '" << args[1] << "'.\n";
+            std::cout << "  Written " << n << " bytes to '" << fname << "'.\n";
+
+            // Auto-close after write
+            files.close(users.current_user(), static_cast<uint16_t>(fd));
+            unbind_fd(fname);
         }
 
         // ============================================================

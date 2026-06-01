@@ -53,8 +53,8 @@ struct VfsFixture {
             fread(block, BLOCKSIZ, 1, disk.handle());
             int n = root->di_size / sizeof(direct);
             if (n > (int)(BLOCKSIZ / sizeof(direct))) n = BLOCKSIZ / sizeof(direct);
-            memcpy(dirs.current_dir().direct, block, n * sizeof(direct));
-            dirs.current_dir().size = n;
+            dirs.current_dir().entries.resize(n);
+            memcpy(dirs.current_dir().entries.data(), block, n * sizeof(direct));
         }
     }
 

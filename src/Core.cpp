@@ -103,8 +103,8 @@ void Core::init()
         fread(block, BLOCKSIZ, 1, m_disk->handle());
         int n = root->di_size / sizeof(direct);
         if (n > (int)(BLOCKSIZ / sizeof(direct))) n = BLOCKSIZ / sizeof(direct);
-        memcpy(m_dirs->current_dir().direct, block, n * sizeof(direct));
-        m_dirs->current_dir().size = n;
+        m_dirs->current_dir().entries.resize(n);
+        memcpy(m_dirs->current_dir().entries.data(), block, n * sizeof(direct));
     }
 
     // Login

@@ -1,6 +1,5 @@
 /**
  * DirectoryOpreation.cpp — Layer 5: Directory operations
- * namei / iname / mkdir / chdir / dir_list
  */
 #include <cstdio>
 #include <cstring>
@@ -15,7 +14,6 @@ DirectoryManager::DirectoryManager(VirtualDisk& disk, InodeCache& icache,
                                    BlockManager& blocks)
     : m_disk(disk), m_icache(icache), m_blocks(blocks)
 {
-    memset(&m_dir, 0, sizeof(m_dir));
 }
 
 // ====== Helpers ======
@@ -42,9 +40,9 @@ void DirectoryManager::writeback_dir(inode *ino)
     char block[BLOCKSIZ];
     memset(block, 0, BLOCKSIZ);
 
-    int n = m_dir.size;
+    int n = (int)m_dir.entries.size();
     if (n > (int)DIRENTS_PER_BLOCK) n = DIRENTS_PER_BLOCK;
-    memcpy(block, m_dir.direct, n * sizeof(direct));
+    memcpy(block, m_dir.entries.data(), n * sizeof(direct));
 
     fseek(m_disk.handle(), DATASTART + ino->di_addr[0] * BLOCKSIZ, SEEK_SET);
     fwrite(block, BLOCKSIZ, 1, m_disk.handle());
@@ -57,7 +55,7 @@ void DirectoryManager::load_dir(inode *ino)
 {
     char block[BLOCKSIZ];
     memset(block, 0, BLOCKSIZ);
-    memset(&m_dir, 0, sizeof(m_dir));
+    m_dir.entries.clear();
 
     if (!ino) return;
 
@@ -66,17 +64,17 @@ void DirectoryManager::load_dir(inode *ino)
 
     int n = ino->di_size / sizeof(direct);
     if (n > (int)DIRENTS_PER_BLOCK) n = DIRENTS_PER_BLOCK;
-    memcpy(m_dir.direct, block, n * sizeof(direct));
-    m_dir.size = n;
+    m_dir.entries.resize(n);
+    memcpy(m_dir.entries.data(), block, n * sizeof(direct));
 }
 
 // ====== namei() ======
 
 unsigned int DirectoryManager::namei(const char *name)
 {
-    for (int i = 0; i < m_dir.size; i++) {
-        if (strcmp(m_dir.direct[i].d_name, name) == 0
-            && m_dir.direct[i].d_ino != 0) {
+    for (size_t i = 0; i < m_dir.entries.size(); i++) {
+        if (strcmp(m_dir.entries[i].d_name, name) == 0
+            && m_dir.entries[i].d_ino != 0) {
             return (unsigned int)i;
         }
     }
@@ -88,8 +86,11 @@ unsigned int DirectoryManager::namei(const char *name)
 unsigned short DirectoryManager::iname(const char *name)
 {
     for (int i = 0; i < DIRNUM; i++) {
-        if (m_dir.direct[i].d_ino == 0) {
-            strcpy(m_dir.direct[i].d_name, name);
+        if (i >= (int)m_dir.entries.size()) {
+            m_dir.entries.resize(i + 1);
+        }
+        if (m_dir.entries[i].d_ino == 0) {
+            strcpy(m_dir.entries[i].d_name, name);
             return (unsigned short)i;
         }
     }
@@ -101,13 +102,13 @@ unsigned short DirectoryManager::iname(const char *name)
 
 void DirectoryManager::dir_list()
 {
-    printf("Directory listing  (size = %d entries)\n", m_dir.size);
+    printf("Directory listing  (size = %zu entries)\n", m_dir.entries.size());
     printf("%-16s %-10s %5s  %s\n", "Name", "Perms", "Size", "Blocks");
 
-    for (int i = 0; i < m_dir.size; i++) {
-        if (m_dir.direct[i].d_ino == 0) continue;
+    for (size_t i = 0; i < m_dir.entries.size(); i++) {
+        if (m_dir.entries[i].d_ino == 0) continue;
 
-        inode *ino = m_icache.iget(m_dir.direct[i].d_ino);
+        inode *ino = m_icache.iget(m_dir.entries[i].d_ino);
         if (!ino) continue;
 
         char perm[11];
@@ -115,10 +116,10 @@ void DirectoryManager::dir_list()
 
         if (ino->di_mode & DIDIR) {
             printf("%-16s %-10s %5s  <dir>\n",
-                   m_dir.direct[i].d_name, perm, "-");
+                   m_dir.entries[i].d_name, perm, "-");
         } else {
             printf("%-16s %-10s %5u  ",
-                   m_dir.direct[i].d_name, perm, ino->di_size);
+                   m_dir.entries[i].d_name, perm, ino->di_size);
             int blk_count = (ino->di_size + BLOCKSIZ - 1) / BLOCKSIZ;
             for (int b = 0; b < blk_count && b < NADDR; b++) {
                 printf("%u ", ino->di_addr[b]);
@@ -132,7 +133,7 @@ void DirectoryManager::dir_list()
 
 // ====== mkdir() ======
 
-void DirectoryManager::mkdir(const char *dirname, uint16_t uid_index)
+void DirectoryManager::mkdir(const char *dirname, uint16_t)
 {
     if (namei(dirname) != (unsigned int)-1) {
         printf("Error: '%s' already exists.\n", dirname);
@@ -140,7 +141,7 @@ void DirectoryManager::mkdir(const char *dirname, uint16_t uid_index)
     }
 
     unsigned short slot = iname(dirname);
-    if (slot == 0 && m_dir.direct[0].d_ino != 0) {
+    if (slot == 0 && !m_dir.entries.empty() && m_dir.entries[0].d_ino != 0) {
         return;
     }
 
@@ -173,9 +174,9 @@ void DirectoryManager::mkdir(const char *dirname, uint16_t uid_index)
     ino->di_addr[0] = blk;
     ino->i_flag   |= IUPDATE;
 
-    m_dir.direct[slot].d_ino = ino->i_ino;
-    if ((int)slot >= m_dir.size) {
-        m_dir.size = slot + 1;
+    m_dir.entries[slot].d_ino = ino->i_ino;
+    if ((int)slot >= (int)m_dir.entries.size()) {
+        m_dir.entries.resize(slot + 1);
     }
 
     m_icache.iput(ino);
@@ -192,7 +193,7 @@ void DirectoryManager::chdir(const char *dirname)
         return;
     }
 
-    inode *target = m_icache.iget(m_dir.direct[idx].d_ino);
+    inode *target = m_icache.iget(m_dir.entries[idx].d_ino);
     if (!target) return;
 
     if (!(target->di_mode & DIDIR)) {

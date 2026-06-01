@@ -68,9 +68,9 @@ int FileOperator::creat(user_t& user, const char *filename, unsigned short mode)
 
     unsigned int di = m_dirs.namei(filename);
 
-    if (di < DIRNUM && m_dirs.current_dir().direct[di].d_ino != DIEMPTY) {
+    if (di < DIRNUM && m_dirs.current_dir().entries[di].d_ino != DIEMPTY) {
         /* File exists → truncate */
-        ino = m_icache.iget(m_dirs.current_dir().direct[di].d_ino);
+        ino = m_icache.iget(m_dirs.current_dir().entries[di].d_ino);
         if (!ino) return -1;
 
         if (!access(user, ino, WRITE_MODE)) {
@@ -106,8 +106,7 @@ int FileOperator::creat(user_t& user, const char *filename, unsigned short mode)
         ino->di_size  = 0;
         ino->i_flag  |= IUPDATE;
 
-        m_dirs.current_dir().direct[slot].d_ino = ino->i_ino;
-        m_dirs.current_dir().size++;
+        m_dirs.current_dir().entries[slot].d_ino = ino->i_ino;
     }
 
     /* Allocate system open-file-table slot */
@@ -142,11 +141,11 @@ unsigned short FileOperator::open(user_t& user, const char *filename,
 {
     unsigned int di = m_dirs.namei(filename);
 
-    if (di >= DIRNUM || m_dirs.current_dir().direct[di].d_ino == DIEMPTY) {
+    if (di >= DIRNUM || m_dirs.current_dir().entries[di].d_ino == DIEMPTY) {
         return (unsigned short)-1;
     }
 
-    inode *ino = m_icache.iget(m_dirs.current_dir().direct[di].d_ino);
+    inode *ino = m_icache.iget(m_dirs.current_dir().entries[di].d_ino);
     if (!ino) return (unsigned short)-1;
 
     if (openmode & FREAD) {
@@ -214,12 +213,12 @@ void FileOperator::delete_file(const char *filename)
 {
     unsigned int di = m_dirs.namei(filename);
 
-    if (di >= DIRNUM || m_dirs.current_dir().direct[di].d_ino == DIEMPTY) {
+    if (di >= DIRNUM || m_dirs.current_dir().entries[di].d_ino == DIEMPTY) {
         printf("Error: %s\n", vfs_strerror(VfsError::E_VFS_NOENT));
         return;
     }
 
-    inode *ino = m_icache.iget(m_dirs.current_dir().direct[di].d_ino);
+    inode *ino = m_icache.iget(m_dirs.current_dir().entries[di].d_ino);
     if (!ino) {
         printf("Error: %s\n", vfs_strerror(VfsError::E_VFS_IO));
         return;
@@ -231,13 +230,9 @@ void FileOperator::delete_file(const char *filename)
     ino->i_flag |= IUPDATE;
 
     if (ino->di_number == 0) {
-        m_dirs.current_dir().direct[di].d_ino = DIEMPTY;
+        m_dirs.current_dir().entries[di].d_ino = DIEMPTY;
         dir& curdir = m_dirs.current_dir();
-        for (int i = di; i < curdir.size - 1; i++) {
-            curdir.direct[i] = curdir.direct[i + 1];
-        }
-        memset(&curdir.direct[curdir.size - 1], 0, sizeof(direct));
-        curdir.size--;
+        curdir.entries.erase(curdir.entries.begin() + di);
     }
 
     m_icache.iput(ino);
@@ -287,7 +282,7 @@ unsigned int FileOperator::read(user_t& user, unsigned int fd,
         remaining  -= (unsigned int)n;
         total_read += (unsigned int)n;
 
-        if (n < chunk) break;
+        if (n < chunk) { remaining = 0; }
     }
 
     m_ofile[sys_no].f_off = off;
@@ -355,6 +350,7 @@ unsigned int FileOperator::write(user_t& user, unsigned int fd,
         ino->i_flag |= IUPDATE;
     }
     m_ofile[sys_no].f_off = off;
+    fflush(m_disk.handle());
 
     return total_written;
 }

@@ -44,8 +44,8 @@ TEST_CASE("namei() finds . and .. after install", "[namei]")
 
     REQUIRE(idx_dot  == 0);
     REQUIRE(idx_dot2 == 1);
-    REQUIRE(fx.dirs.current_dir().direct[idx_dot].d_ino  == 1);
-    REQUIRE(fx.dirs.current_dir().direct[idx_dot2].d_ino == 1);
+    REQUIRE(fx.dirs.current_dir().entries[idx_dot].d_ino  == 1);
+    REQUIRE(fx.dirs.current_dir().entries[idx_dot2].d_ino == 1);
 }
 
 TEST_CASE("namei() returns -1 for non-existent file", "[namei]")
@@ -66,9 +66,9 @@ TEST_CASE("namei() skips deleted entries (d_ino == 0)", "[namei]")
 
     /* Simulate a deleted entry: slot 2 has a name but d_ino == 0 */
     dir& cur = fx.dirs.current_dir();
-    strcpy(cur.direct[2].d_name, "deleted_file");
-    cur.direct[2].d_ino = 0;
-    cur.size = 3;
+    strcpy(cur.entries[2].d_name, "deleted_file");
+    cur.entries[2].d_ino = 0;
+    cur.entries.resize(3);
 
     unsigned int idx = fx.dirs.namei("deleted_file");
     REQUIRE(idx == (unsigned int)-1); /* skipped because d_ino == 0 */
@@ -88,8 +88,8 @@ TEST_CASE("iname() finds empty slot and writes name", "[iname]")
 
     REQUIRE(slot == 2);
     dir& cur = fx.dirs.current_dir();
-    REQUIRE(strcmp(cur.direct[slot].d_name, "newfile") == 0);
-    REQUIRE(cur.direct[slot].d_ino == 0); /* caller sets d_ino later */
+    REQUIRE(strcmp(cur.entries[slot].d_name, "newfile") == 0);
+    REQUIRE(cur.entries[slot].d_ino == 0); /* caller sets d_ino later */
 }
 
 TEST_CASE("iname() reuses deleted-entry slots", "[iname]")
@@ -99,16 +99,16 @@ TEST_CASE("iname() reuses deleted-entry slots", "[iname]")
 
     /* Fill slot 2, then delete it, then verify iname reuses it */
     dir& cur = fx.dirs.current_dir();
-    strcpy(cur.direct[2].d_name, "will_delete");
-    cur.direct[2].d_ino = 42; /* pretend it's allocated */
-    cur.size = 3;
+    strcpy(cur.entries[2].d_name, "will_delete");
+    cur.entries[2].d_ino = 42; /* pretend it's allocated */
+    cur.entries.resize(3);
 
     /* "Delete": set d_ino to 0 */
-    cur.direct[2].d_ino = 0;
+    cur.entries[2].d_ino = 0;
 
     unsigned short slot = fx.dirs.iname("reused");
     REQUIRE(slot == 2);
-    REQUIRE(strcmp(cur.direct[2].d_name, "reused") == 0);
+    REQUIRE(strcmp(cur.entries[2].d_name, "reused") == 0);
 }
 
 /* ================================================================
@@ -231,7 +231,7 @@ TEST_CASE("mkdir() creates subdirectory findable by namei", "[mkdir]")
     REQUIRE(idx == 2); /* after . and .. */
 
     /* Verify the new directory's inode on disk */
-    inode *ino = fx.icache.iget(fx.dirs.current_dir().direct[idx].d_ino);
+    inode *ino = fx.icache.iget(fx.dirs.current_dir().entries[idx].d_ino);
     REQUIRE(ino != nullptr);
     REQUIRE(ino->di_mode & DIDIR);
     REQUIRE(ino->di_size == sizeof(direct) * 2); /* . and .. */
@@ -280,10 +280,10 @@ TEST_CASE("chdir() into subdirectory changes current directory", "[chdir]")
 
     /* m_dir should contain . and .. */
     dir& cur = fx.dirs.current_dir();
-    REQUIRE(cur.size == 2);
-    REQUIRE(strcmp(cur.direct[0].d_name, ".")  == 0);
-    REQUIRE(strcmp(cur.direct[1].d_name, "..") == 0);
-    REQUIRE(cur.direct[1].d_ino == root_ino); /* .. points to parent */
+    REQUIRE(cur.entries.size()== 2);
+    REQUIRE(strcmp(cur.entries[0].d_name, ".")  == 0);
+    REQUIRE(strcmp(cur.entries[1].d_name, "..") == 0);
+    REQUIRE(cur.entries[1].d_ino == root_ino); /* .. points to parent */
 }
 
 TEST_CASE("chdir(..) from subdir returns to parent", "[chdir]")
@@ -299,7 +299,7 @@ TEST_CASE("chdir(..) from subdir returns to parent", "[chdir]")
     fx.dirs.chdir("..");
     REQUIRE(fx.dirs.cur_path_inode()->i_ino == root_ino);
     /* m_dir should show 3 entries: .  ..  child */
-    REQUIRE(fx.dirs.current_dir().size >= 3);
+    REQUIRE(fx.dirs.current_dir().entries.size()>= 3);
     REQUIRE(fx.dirs.namei("child") != (unsigned int)-1);
 }
 
@@ -352,8 +352,8 @@ TEST_CASE("mkdir → chdir → mkdir → chdir .. round trip", "[integration]")
 
     /* Inside B: verify . and .. */
     dir& cur = fx.dirs.current_dir();
-    REQUIRE(strcmp(cur.direct[0].d_name, ".")  == 0);
-    REQUIRE(strcmp(cur.direct[1].d_name, "..") == 0);
+    REQUIRE(strcmp(cur.entries[0].d_name, ".")  == 0);
+    REQUIRE(strcmp(cur.entries[1].d_name, "..") == 0);
 
     /* Go back to A */
     fx.dirs.chdir("..");
