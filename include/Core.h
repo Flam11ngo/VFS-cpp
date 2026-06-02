@@ -197,6 +197,9 @@ private:
 
 extern Core g_core;
 
+/** Last error set by any VFS operation — checked by Shell for user feedback. */
+extern VfsError g_errno;
+
 // ====== Subsystem headers ======
 #include "VirtualDisk.h"
 #include "BlockManage.h"

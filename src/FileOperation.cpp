@@ -64,6 +64,7 @@ unsigned int FileOperator::access(const user_t& user, inode *inode,
 
 int FileOperator::creat(user_t& user, const char *filename, unsigned short mode)
 {
+    extern VfsError g_errno;
     inode *ino = nullptr;
 
     unsigned int di = m_dirs.namei(filename);
@@ -74,6 +75,7 @@ int FileOperator::creat(user_t& user, const char *filename, unsigned short mode)
         if (!ino) return -1;
 
         if (!access(user, ino, WRITE_MODE)) {
+            g_errno = VfsError::E_VFS_NOPERM;
             m_icache.iput(ino);
             return -1;
         }
@@ -142,20 +144,23 @@ unsigned short FileOperator::open(user_t& user, const char *filename,
     unsigned int di = m_dirs.namei(filename);
 
     if (di >= DIRNUM || m_dirs.current_dir().entries[di].d_ino == DIEMPTY) {
+        g_errno = VfsError::E_VFS_NOENT;
         return (unsigned short)-1;
     }
 
     inode *ino = m_icache.iget(m_dirs.current_dir().entries[di].d_ino);
-    if (!ino) return (unsigned short)-1;
+    if (!ino) { g_errno = VfsError::E_VFS_IO; return (unsigned short)-1; }
 
     if (openmode & FREAD) {
         if (!access(user, ino, READ_MODE)) {
+            g_errno = VfsError::E_VFS_NOPERM;
             m_icache.iput(ino);
             return (unsigned short)-1;
         }
     }
     if (openmode & (FWRITE | FAPPEND)) {
         if (!access(user, ino, WRITE_MODE)) {
+            g_errno = VfsError::E_VFS_NOPERM;
             m_icache.iput(ino);
             return (unsigned short)-1;
         }

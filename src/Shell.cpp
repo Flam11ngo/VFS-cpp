@@ -21,21 +21,27 @@
 // ====== Static members ======
 
 std::unordered_map<std::string, int> Shell::s_path2fd;
+std::string Shell::s_cwd = "/";
 
-int Shell::lookup_fd(const std::string& name)
+void Shell::show_prompt()
 {
-    auto it = s_path2fd.find(name);
+    std::cout << s_cwd << " $ ";
+}
+
+int Shell::lookup_fd(const std::string& path)
+{
+    auto it = s_path2fd.find(path);
     return (it != s_path2fd.end()) ? it->second : -1;
 }
 
-void Shell::bind_fd(const std::string& name, int fd)
+void Shell::bind_fd(const std::string& path, int fd)
 {
-    s_path2fd[name] = fd;
+    s_path2fd[path] = fd;
 }
 
-void Shell::unbind_fd(const std::string& name)
+void Shell::unbind_fd(const std::string& path)
 {
-    s_path2fd.erase(name);
+    s_path2fd.erase(path);
 }
 
 uint32_t Shell::file_size(int fd)
@@ -80,6 +86,8 @@ std::string Shell::editor_read(const std::string& existing)
 
 // ====== Path helpers ======
 
+static void unwind_path(int depth);   // forward decl
+
 /** Split a path like "a/b/c/f.txt" into directory components + final filename.
  *  Auto-creates missing directories via mkdir.  Changes cwd along the way.
  *  Returns the filename (last component).  Caller must chdir("..") depth times
@@ -98,24 +106,101 @@ static std::pair<std::string, int> resolve_path(const std::string& path)
     if (parts.empty()) return {"", 0};
 
     int depth = 0;
-    // All components except the last are directories
     for (size_t i = 0; i + 1 < parts.size(); i++) {
-        if (dirs.namei(parts[i].c_str()) == (unsigned int)-1) {
-            // Directory doesn't exist — create it
+        if (parts[i] == "..") {
+            if (depth > 0) {
+                g_core.dirs().chdir("..");
+                depth--;
+                auto pos = Shell::s_cwd.rfind('/');
+                if (pos != std::string::npos && pos > 0)
+                    Shell::s_cwd.resize(pos);
+                else
+                    Shell::s_cwd = "/";
+            }
+            continue;
+        }
+        if (parts[i] == ".") continue;
+
+        unsigned int idx2 = dirs.namei(parts[i].c_str());
+        if (idx2 == (unsigned int)-1) {
             dirs.mkdir(parts[i].c_str(), 0);
+        } else {
+            // Entry exists — verify it's a directory
+            inode* t = g_core.icache().iget(dirs.current_dir().entries[idx2].d_ino);
+            bool ok = t && (t->di_mode & DIDIR);
+            if (t) g_core.icache().iput(t);
+            if (!ok) {
+                std::cout << "  '" << parts[i] << "' is not a directory.\n";
+                unwind_path(depth);
+                return {"", -1};
+            }
         }
         dirs.chdir(parts[i].c_str());
+        if (Shell::s_cwd.back() != '/') Shell::s_cwd += '/';
+        Shell::s_cwd += parts[i];
         depth++;
     }
 
     return {parts.back(), depth};
 }
 
-/** chdir("..") depth times to undo resolve_path. */
 static void unwind_path(int depth)
 {
-    for (int i = 0; i < depth; i++)
+    for (int i = 0; i < depth; i++) {
         g_core.dirs().chdir("..");
+        auto pos = Shell::s_cwd.rfind('/');
+        if (pos != std::string::npos && pos > 0)
+            Shell::s_cwd.resize(pos);
+        else
+            Shell::s_cwd = "/";
+    }
+}
+
+/** Navigate into path without creating directories. Returns {final_name, depth}. */
+static std::pair<std::string, int> navigate_path(const std::string& path)
+{
+    auto& dirs = g_core.dirs();
+    std::vector<std::string> parts;
+    std::istringstream iss(path);
+    std::string token;
+    while (std::getline(iss, token, '/'))
+        parts.push_back(token);
+
+    if (parts.empty()) return {"", 0};
+
+    int depth = 0;
+    // Process ALL components including the last
+    for (size_t i = 0; i < parts.size(); i++) {
+        if (parts[i] == "..") {
+            if (dirs.namei("..") != (unsigned int)-1) {
+                dirs.chdir("..");
+                if (depth > 0) depth--;
+                auto pos = Shell::s_cwd.rfind('/');
+                Shell::s_cwd = (pos != std::string::npos && pos > 0) ? Shell::s_cwd.substr(0, pos) : "/";
+            }
+            continue;
+        }
+        if (parts[i] == ".") continue;
+
+        unsigned int idx = dirs.namei(parts[i].c_str());
+        if (idx == (unsigned int)-1) {
+            unwind_path(depth);
+            return {parts[i], -1};
+        }
+        // Check it's actually a directory before entering
+        inode* target = g_core.icache().iget(dirs.current_dir().entries[idx].d_ino);
+        bool is_dir = target && (target->di_mode & DIDIR);
+        if (target) g_core.icache().iput(target);
+        if (!is_dir) {
+            unwind_path(depth);
+            return {parts[i], -1};
+        }
+        dirs.chdir(parts[i].c_str());
+        if (Shell::s_cwd.back() != '/') Shell::s_cwd += '/';
+        Shell::s_cwd += parts[i];
+        depth++;
+    }
+    return {parts.back(), depth};   // parts.back() for use as display name
 }
 
 /** Open, read entire content, close.  Returns empty string on failure. */
@@ -152,21 +237,27 @@ static std::vector<std::string> parse_cmd(const std::string &line)
 
 static void show_help()
 {
-    std::cout
-        << "Commands:\n"
-        << "  login  <uid> <passwd>       Log in\n"
-        << "  logout                       Log out\n"
-        << "  ls | dir                     List current directory\n"
-        << "  mkdir <name>                 Create subdirectory\n"
-        << "  cd    <name>                 Change directory\n"
-        << "  creat <name> [mode]          Create file  (default mode 0777)\n"
-        << "  open  <name> [mode]          Open file    (default mode 1=read)\n"
-        << "  close <name>                 Close file\n"
-        << "  read  <name> [size]          Read file   (default: all bytes)\n"
-        << "  write [-o] <name> [text]     Append / overwrite file\n"
-        << "  delete <name>                Delete file\n"
-        << "  format                       Format disk\n"
-        << "  halt | exit | quit           Shutdown\n";
+    std::cout << "Commands:\n"
+              << "  login  <uid> <passwd>       Log in\n"
+              << "  logout                       Log out\n"
+              << "  ls | dir                     List current directory\n"
+              << "  mkdir <name>                 Create subdirectory\n"
+              << "  cd    <path>                 Change directory\n"
+              << "  creat <path> [mode]          Create file  (default mode 0777)\n"
+              << "  open  <path> [mode]          Open file    (default mode 1=read)\n"
+              << "  close <path>                 Close file\n"
+              << "  read  <path> [size]          Read file   (default: all bytes)\n"
+              << "  write [-o] <path> [text]     Append / overwrite file\n"
+              << "  delete <path>                Delete file\n"
+              << "  find  <name>                 Recursively search for name\n"
+              << "  format                       Format disk\n"
+              << "  halt | exit | quit           Shutdown\n";
+
+    if (g_core.users().current_user().u_uid == 0) {
+        std::cout << "\n  --- admin (uid=0) ---\n"
+                  << "  reg  <uid> <gid> <passwd>   Register new user\n"
+                  << "  uls                          List all users\n";
+    }
 }
 
 static bool parse_uint(const std::string &text, unsigned long &value)
@@ -193,7 +284,7 @@ void Shell::run()
 
     std::string line;
     while (true) {
-        std::cout << "$ ";
+        show_prompt();
         if (!std::getline(std::cin, line)) break;
         if (line.empty()) continue;
 
@@ -207,6 +298,62 @@ void Shell::run()
         // ============================================================
         if (cmd == "help") {
             show_help();
+        }
+
+        // ============================================================
+        //  reg  <uid>  <gid>  <password>   (uid=0 only)
+        // ============================================================
+        else if (cmd == "reg") {
+            if (users.current_user().u_uid != 0) {
+                std::cout << "  reg: root (uid=0) only.\n";
+                continue;
+            }
+            if (args.size() < 4) {
+                std::cout << "Usage: reg <uid> <gid> <password>\n";
+                continue;
+            }
+            unsigned long new_uid = 0, new_gid = 0;
+            if (!parse_uint(args[1], new_uid) || !parse_uint(args[2], new_gid))
+                continue;
+
+            // Find empty slot in password table
+            pwd* tbl = users.pwd_table();
+            int slot = -1;
+            for (int i = 0; i < PWDNUM; i++) {
+                if (tbl[i].p_uid == 0 && tbl[i].p_gid == 0 && tbl[i].password[0] == '\0') {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                std::cout << "  Password table full.\n";
+                continue;
+            }
+            tbl[slot].p_uid = static_cast<uint16_t>(new_uid);
+            tbl[slot].p_gid = static_cast<uint16_t>(new_gid);
+            strncpy(tbl[slot].password, args[3].c_str(), PWDSIZ - 1);
+            tbl[slot].password[PWDSIZ - 1] = '\0';
+            users.save_password_file();
+            std::cout << "  Registered user uid=" << new_uid << " gid=" << new_gid << ".\n";
+        }
+
+        // ============================================================
+        //  uls   (uid=0 only — list all users)
+        // ============================================================
+        else if (cmd == "uls") {
+            if (users.current_user().u_uid != 0) {
+                std::cout << "  uls: root (uid=0) only.\n";
+                continue;
+            }
+            pwd* tbl = users.pwd_table();
+            std::cout << "  uid  gid  password\n";
+            std::cout << "  ---  ---  --------\n";
+            for (int i = 0; i < PWDNUM; i++) {
+                if (tbl[i].password[0] != '\0')
+                    std::cout << "  " << tbl[i].p_uid << "    "
+                              << tbl[i].p_gid << "    "
+                              << tbl[i].password << "\n";
+            }
         }
 
         // ============================================================
@@ -257,7 +404,9 @@ void Shell::run()
                 std::cout << "Usage: mkdir <dirname>\n";
                 continue;
             }
-            dirs.mkdir(args[1].c_str(), users.current_user_id());
+            auto [fname, depth] = resolve_path(args[1]);
+            dirs.mkdir(fname.c_str(), users.current_user_id());
+            unwind_path(depth);
         }
 
         // ============================================================
@@ -265,15 +414,26 @@ void Shell::run()
         // ============================================================
         else if (cmd == "cd") {
             if (args.size() < 2) {
-                std::cout << "Usage: cd <dirname>\n";
+                std::cout << "Usage: cd <path | ~>\n";
                 continue;
             }
-            dirs.chdir(args[1].c_str());
+            if (args[1] == "~") {
+                // Go to root: keep going up until inode stops changing
+                while (true) {
+                    auto prev = dirs.cur_path_inode() ? dirs.cur_path_inode()->i_ino : 0;
+                    dirs.chdir("..");
+                    auto cur = dirs.cur_path_inode() ? dirs.cur_path_inode()->i_ino : 0;
+                    if (cur == prev) break;   // root's ".." = root itself
+                }
+                Shell::s_cwd = "/";
+                continue;
+            }
+            auto [bad, ok] = navigate_path(args[1]);
+            if (ok < 0)
+                std::cout << "  '" << bad << "' not found or not a directory.\n";
         }
 
-        // ============================================================
-        //  creat  <name>  [mode]
-        // ============================================================
+
         else if (cmd == "creat") {
             if (args.size() < 2) {
                 std::cout << "Usage: creat <filename> [mode]\n";
@@ -283,11 +443,19 @@ void Shell::run()
             if (args.size() >= 3 && !parse_uint(args[2], mode)) continue;
 
             auto [fname, depth] = resolve_path(args[1]);
+
+            // Check if file already exists in this directory
+            if (dirs.namei(fname.c_str()) != (unsigned int)-1) {
+                std::cout << "  '" << fname << "' already exists.\n";
+                unwind_path(depth);
+                continue;
+            }
+
             int fd = files.creat(users.current_user(), fname.c_str(),
                                  static_cast<uint16_t>(mode));
             if (fd >= 0) {
-                bind_fd(fname, fd);
-                std::cout << "  Created '" << fname << "'  fd=" << fd
+                bind_fd(args[1], fd);
+                std::cout << "  Created '" << args[1] << "'  fd=" << fd
                           << "  mode=" << std::oct << mode << std::dec << "\n";
             } else {
                 std::cout << "  creat failed.\n";
@@ -295,9 +463,6 @@ void Shell::run()
             unwind_path(depth);
         }
 
-        // ============================================================
-        //  open  <name>  [mode]
-        // ============================================================
         else if (cmd == "open") {
             if (args.size() < 2) {
                 std::cout << "Usage: open <filename> [mode]\n";
@@ -343,19 +508,28 @@ void Shell::run()
                 std::cout << "Usage: read <filename> [size]\n";
                 continue;
             }
-            auto [fname, depth] = resolve_path(args[1]);
+            const std::string orig_path = args[1];
+            auto [fname, depth] = resolve_path(orig_path);
 
-            int fd = lookup_fd(fname);
+            int fd = lookup_fd(orig_path);
             if (fd < 0) {
                 uint16_t new_fd = files.open(users.current_user(), fname.c_str(), FREAD);
                 if (new_fd == static_cast<uint16_t>(-1)) {
-                    std::cout << "  Cannot open '" << fname << "' for reading.\n";
+                    std::cout << "  Cannot open '" << orig_path << "' for reading.\n";
                     unwind_path(depth);
                     continue;
                 }
                 fd = new_fd;
-                bind_fd(fname, fd);
-                std::cout << "  (auto-opened '" << fname << "' fd=" << fd << ")\n";
+                bind_fd(orig_path, fd);
+            }
+
+            // Reject directories
+            if (files.ofile_table()[users.current_user().u_ofile[fd]].f_inode->di_mode & DIDIR) {
+                std::cout << "  '" << orig_path << "' is a directory.\n";
+                files.close(users.current_user(), static_cast<uint16_t>(fd));
+                unbind_fd(orig_path);
+                unwind_path(depth);
+                continue;
             }
 
             uint32_t max_size = file_size(fd);
@@ -363,7 +537,7 @@ void Shell::run()
                 unsigned long s = 0;
                 if (!parse_uint(args[2], s)) {
                     files.close(users.current_user(), static_cast<uint16_t>(fd));
-                    unbind_fd(fname);
+                    unbind_fd(orig_path);
                     unwind_path(depth);
                     continue;
                 }
@@ -373,7 +547,7 @@ void Shell::run()
             if (max_size == 0) {
                 std::cout << "  (empty file)\n";
                 files.close(users.current_user(), static_cast<uint16_t>(fd));
-                unbind_fd(fname);
+                unbind_fd(orig_path);
                 unwind_path(depth);
                 continue;
             }
@@ -403,7 +577,7 @@ void Shell::run()
             std::cout << "  \n";
 
             files.close(users.current_user(), static_cast<uint16_t>(fd));
-            unbind_fd(fname);
+            unbind_fd(orig_path);
             unwind_path(depth);
         }
 
@@ -425,14 +599,15 @@ void Shell::run()
                 continue;
             }
 
-            auto [fname, depth] = resolve_path(args[name_idx]);
-            int fd = lookup_fd(fname);
+            const std::string orig_path = args[name_idx];
+            auto [fname, depth] = resolve_path(orig_path);
+            int fd = lookup_fd(orig_path);
 
             if (overwrite) {
                 // Overwrite mode: close if open, creat (truncates), rebind
                 if (fd >= 0) {
                     files.close(users.current_user(), static_cast<uint16_t>(fd));
-                    unbind_fd(fname);
+                    unbind_fd(orig_path);
                 }
                 int cfd = files.creat(users.current_user(), fname.c_str(), DEFAULTMODE);
                 if (cfd < 0) {
@@ -440,13 +615,13 @@ void Shell::run()
                     continue;
                 }
                 fd = cfd;
-                bind_fd(fname, fd);
+                bind_fd(orig_path, fd);
                 std::cout << "  (overwrite mode, fd=" << fd << ")\n";
             } else {
                 // Append mode: always open fresh with FAPPEND
                 if (fd >= 0) {
                     files.close(users.current_user(), static_cast<uint16_t>(fd));
-                    unbind_fd(fname);
+                    unbind_fd(orig_path);
                 }
                 uint16_t new_fd = files.open(users.current_user(), fname.c_str(),
                                              FWRITE | FAPPEND);
@@ -459,7 +634,20 @@ void Shell::run()
                     new_fd = static_cast<uint16_t>(cfd);
                 }
                 fd = new_fd;
-                bind_fd(fname, fd);
+                bind_fd(orig_path, fd);
+            }
+
+            // Reject directories
+            {
+                auto& u = users.current_user();
+                inode* ino = files.ofile_table()[u.u_ofile[fd]].f_inode;
+                if (ino && (ino->di_mode & DIDIR)) {
+                    std::cout << "  '" << orig_path << "' is a directory.\n";
+                    files.close(users.current_user(), static_cast<uint16_t>(fd));
+                    unbind_fd(orig_path);
+                    unwind_path(depth);
+                    continue;
+                }
             }
 
             // Gather text
@@ -495,7 +683,7 @@ void Shell::run()
 
             // Auto-close after write
             files.close(users.current_user(), static_cast<uint16_t>(fd));
-            unbind_fd(fname);
+            unbind_fd(orig_path);
         }
 
         // ============================================================
@@ -506,13 +694,76 @@ void Shell::run()
                 std::cout << "Usage: delete <filename>\n";
                 continue;
             }
-            int fd = lookup_fd(args[1]);
+            const std::string orig_path = args[1];
+            auto [fname, depth] = resolve_path(orig_path);
+
+            int fd = lookup_fd(orig_path);
             if (fd >= 0) {
                 files.close(users.current_user(), static_cast<uint16_t>(fd));
-                unbind_fd(args[1]);
+                unbind_fd(orig_path);
             }
-            files.delete_file(args[1].c_str());
-            std::cout << "  Deleted '" << args[1] << "'.\n";
+            files.delete_file(fname.c_str());
+            std::cout << "  Deleted '" << orig_path << "'.\n";
+            unwind_path(depth);
+        }
+
+        // ============================================================
+        //  find  <name>
+        // ============================================================
+        else if (cmd == "find") {
+            if (args.size() < 2) {
+                std::cout << "Usage: find <name>\n";
+                continue;
+            }
+
+            // Recursive search helper
+            struct {
+                void search(DirectoryManager& dirs, InodeCache& icache,
+                           const std::string& prefix, const std::string& name) const
+                {
+                    auto& entries = dirs.current_dir().entries;
+                    std::vector<uint32_t> subdirs;
+
+                    for (size_t i = 0; i < entries.size(); i++) {
+                        if (entries[i].d_ino == 0) continue;
+                        if (strcmp(entries[i].d_name, ".") == 0 ||
+                            strcmp(entries[i].d_name, "..") == 0) continue;
+
+                        inode* f = icache.iget(entries[i].d_ino);
+                        bool is_file = f && !(f->di_mode & DIDIR);
+                        if (f) icache.iput(f);
+                        if (strcmp(entries[i].d_name, name.c_str()) == 0 && is_file)
+                            std::cout << "  " << prefix << "/" << name << "\n";
+
+                        // Collect subdirectories for recursion
+                        inode* ino = icache.iget(entries[i].d_ino);
+                        if (ino && (ino->di_mode & DIDIR))
+                            subdirs.push_back(entries[i].d_ino);
+                        if (ino) icache.iput(ino);
+                    }
+
+                    for (uint32_t ino_num : subdirs) {
+                        inode* sub = icache.iget(ino_num);
+                        if (!sub) continue;
+                        // Find the name of this subdirectory
+                        std::string subname;
+                        for (auto& e : entries)
+                            if (e.d_ino == ino_num) { subname = e.d_name; break; }
+
+                        dirs.chdir(subname.c_str());
+                        search(dirs, icache, prefix + "/" + subname, name);
+                        dirs.chdir("..");
+                        icache.iput(sub);
+                    }
+                }
+            } recursive_find;
+
+            auto saved_ino = dirs.cur_path_inode() ? dirs.cur_path_inode()->i_ino : 0;
+            recursive_find.search(dirs, icache, s_cwd == "/" ? "" : s_cwd, args[1]);
+            // Restore original directory
+            while (dirs.cur_path_inode() && dirs.cur_path_inode()->i_ino != saved_ino) {
+                dirs.chdir("..");
+            }
         }
 
         // ============================================================

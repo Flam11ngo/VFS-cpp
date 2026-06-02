@@ -119,6 +119,7 @@ inode* BlockManager::ialloc(InodeCache& icache)
 
     fseek(m_disk.handle(), DINODESTART + dinode_id * DINODESIZ, SEEK_SET);
     fwrite(&empty_inode, sizeof(empty_inode), 1, m_disk.handle());
+    fflush(m_disk.handle());
 
     /* Sync memory inode: iget() loaded stale (zeroed) data before this write */
     ino->di_number = 1;

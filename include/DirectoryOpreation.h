@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Core.h"
+#include <unordered_map>
 
 class VirtualDisk;
 class InodeCache;
@@ -45,6 +46,9 @@ public:
     inode*  cur_path_inode()   { return m_cur_path_inode; }
     void    set_cur_path_inode(inode* ino) { m_cur_path_inode = ino; }
 
+    /** Load directory content from an inode's data block into m_dir. */
+    void load_dir(inode* ino);
+
 private:
     VirtualDisk&  m_disk;
     InodeCache&   m_icache;
@@ -54,9 +58,9 @@ private:
 
     // -------- Helpers --------
 
-    /** Write the cached g_dir back to the inode's data block on disk. */
     void writeback_dir(inode* ino);
 
-    /** Load directory content from an inode's data block into m_dir. */
-    void load_dir(inode* ino);
+    /** In-memory cache of directory contents keyed by inode number.
+     *  writeback_dir stores here; load_dir fetches from here first. */
+    std::unordered_map<uint32_t, std::vector<direct>> m_dir_cache;
 };

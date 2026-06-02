@@ -46,19 +46,29 @@ void DirectoryManager::writeback_dir(inode *ino)
 
     fseek(m_disk.handle(), DATASTART + ino->di_addr[0] * BLOCKSIZ, SEEK_SET);
     fwrite(block, BLOCKSIZ, 1, m_disk.handle());
+    fflush(m_disk.handle());
 
     ino->di_size = n * sizeof(direct);
     ino->i_flag |= IUPDATE;
+
+    // Update cache — the definitive copy lives here
+    m_dir_cache[ino->i_ino] = m_dir.entries;
 }
 
 void DirectoryManager::load_dir(inode *ino)
 {
-    char block[BLOCKSIZ];
-    memset(block, 0, BLOCKSIZ);
     m_dir.entries.clear();
-
     if (!ino) return;
 
+    // Check cache first — avoids disk-read of stale data
+    auto it = m_dir_cache.find(ino->i_ino);
+    if (it != m_dir_cache.end()) {
+        m_dir.entries = it->second;
+        return;
+    }
+
+    char block[BLOCKSIZ];
+    memset(block, 0, BLOCKSIZ);
     fseek(m_disk.handle(), DATASTART + ino->di_addr[0] * BLOCKSIZ, SEEK_SET);
     fread(block, BLOCKSIZ, 1, m_disk.handle());
 
@@ -66,6 +76,8 @@ void DirectoryManager::load_dir(inode *ino)
     if (n > (int)DIRENTS_PER_BLOCK) n = DIRENTS_PER_BLOCK;
     m_dir.entries.resize(n);
     memcpy(m_dir.entries.data(), block, n * sizeof(direct));
+
+    m_dir_cache[ino->i_ino] = m_dir.entries;
 }
 
 // ====== namei() ======
@@ -85,7 +97,7 @@ unsigned int DirectoryManager::namei(const char *name)
 
 unsigned short DirectoryManager::iname(const char *name)
 {
-    for (int i = 0; i < DIRNUM; i++) {
+    for (int i = 2; i < DIRNUM; i++) {    // skip . and ..
         if (i >= (int)m_dir.entries.size()) {
             m_dir.entries.resize(i + 1);
         }
@@ -166,6 +178,8 @@ void DirectoryManager::mkdir(const char *dirname, uint16_t)
 
     fseek(m_disk.handle(), DATASTART + blk * BLOCKSIZ, SEEK_SET);
     fwrite(block, BLOCKSIZ, 1, m_disk.handle());
+    fflush(m_disk.handle());
+    fseek(m_disk.handle(), DATASTART + blk * BLOCKSIZ, SEEK_SET);
 
     ino->di_mode   = DIDIR | DEFAULTMODE;
     ino->di_uid    = 0;
@@ -174,10 +188,19 @@ void DirectoryManager::mkdir(const char *dirname, uint16_t)
     ino->di_addr[0] = blk;
     ino->i_flag   |= IUPDATE;
 
-    m_dir.entries[slot].d_ino = ino->i_ino;
-    if ((int)slot >= (int)m_dir.entries.size()) {
+    if ((int)slot >= (int)m_dir.entries.size())
         m_dir.entries.resize(slot + 1);
-    }
+    m_dir.entries[slot].d_ino = ino->i_ino;
+
+    // Cache the new directory's entries (., ..) so load_dir won't hit disk
+    std::vector<direct> new_entries = {
+        direct{}, direct{}
+    };
+    strcpy(new_entries[0].d_name, ".");
+    new_entries[0].d_ino = ino->i_ino;
+    strcpy(new_entries[1].d_name, "..");
+    new_entries[1].d_ino = m_cur_path_inode ? m_cur_path_inode->i_ino : 1;
+    m_dir_cache[ino->i_ino] = std::move(new_entries);
 
     m_icache.iput(ino);
     printf("Directory '%s' created.\n", dirname);
@@ -206,6 +229,4 @@ void DirectoryManager::chdir(const char *dirname)
     m_icache.iput(m_cur_path_inode);
     m_cur_path_inode = target;
     load_dir(target);
-
-    printf("Changed to directory '%s'.\n", dirname);
 }

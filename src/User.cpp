@@ -42,6 +42,21 @@ void UserManager::load_password_file()
     memcpy(m_pwd, block, sizeof(pwd) * PWDNUM);
 }
 
+void UserManager::save_password_file()
+{
+    dinode pwd_inode;
+    fseek(m_disk.handle(), DINODESTART + 3 * DINODESIZ, SEEK_SET);
+    fread(&pwd_inode, sizeof(dinode), 1, m_disk.handle());
+
+    char block[BLOCKSIZ];
+    memset(block, 0, BLOCKSIZ);
+    memcpy(block, m_pwd, sizeof(pwd) * PWDNUM);
+
+    fseek(m_disk.handle(), DATASTART + pwd_inode.di_addr[0] * BLOCKSIZ, SEEK_SET);
+    fwrite(block, BLOCKSIZ, 1, m_disk.handle());
+    fflush(m_disk.handle());
+}
+
 // ====== login() ======
 
 int UserManager::login(unsigned short uid, const char *passwd)
@@ -62,9 +77,11 @@ int UserManager::login(unsigned short uid, const char *passwd)
                     return 1;
                 }
             }
+            g_errno = VfsError::E_VFS_NFILE;
             return 0;
         }
     }
+    g_errno = VfsError::E_VFS_AUTH;
     return 0;
 }
 
@@ -95,6 +112,7 @@ int UserManager::logout(unsigned short uid)
 
 void UserManager::halt()
 {
+    save_password_file();
     m_dirs.chdir("..");
     m_icache.iput(m_dirs.cur_path_inode());
     m_dirs.set_cur_path_inode(nullptr);

@@ -47,14 +47,7 @@ struct VfsFixture {
         inode* root = icache.iget(1);
         if (root) {
             dirs.set_cur_path_inode(root);
-            char block[BLOCKSIZ];
-            memset(block, 0, BLOCKSIZ);
-            fseek(disk.handle(), DATASTART + root->di_addr[0] * BLOCKSIZ, SEEK_SET);
-            fread(block, BLOCKSIZ, 1, disk.handle());
-            int n = root->di_size / sizeof(direct);
-            if (n > (int)(BLOCKSIZ / sizeof(direct))) n = BLOCKSIZ / sizeof(direct);
-            dirs.current_dir().entries.resize(n);
-            memcpy(dirs.current_dir().entries.data(), block, n * sizeof(direct));
+            dirs.load_dir(root);
         }
     }
 

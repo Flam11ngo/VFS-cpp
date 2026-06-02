@@ -41,6 +41,7 @@ const char *vfs_strerror(VfsError err)
 // ====== Global instance ======
 
 Core g_core;
+VfsError g_errno = VfsError::E_VFS_OK;
 
 // ====== Core constructor / destructor ======
 
@@ -93,18 +94,11 @@ void Core::init()
     m_users  = new UserManager(*m_disk, *m_icache, *m_dirs, *m_files, m_superblock);
     m_users->load_password_file();
 
-    // Load root directory
+    // Load root directory via load_dir (populates cache)
     inode* root = m_icache->iget(1);
     if (root) {
         m_dirs->set_cur_path_inode(root);
-        char block[BLOCKSIZ];
-        memset(block, 0, BLOCKSIZ);
-        fseek(m_disk->handle(), DATASTART + root->di_addr[0] * BLOCKSIZ, SEEK_SET);
-        fread(block, BLOCKSIZ, 1, m_disk->handle());
-        int n = root->di_size / sizeof(direct);
-        if (n > (int)(BLOCKSIZ / sizeof(direct))) n = BLOCKSIZ / sizeof(direct);
-        m_dirs->current_dir().entries.resize(n);
-        memcpy(m_dirs->current_dir().entries.data(), block, n * sizeof(direct));
+        m_dirs->load_dir(root);
     }
 
     // Login

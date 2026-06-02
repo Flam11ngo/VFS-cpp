@@ -25,6 +25,9 @@ public:
      *  Must be called after VirtualDisk::install(). */
     void load_password_file();
 
+    /** Persist password table back to disk (inode 3). */
+    void save_password_file();
+
     // -------- Authentication --------
 
     /** Authenticate `uid` with `passwd`. On success, fills a user slot
