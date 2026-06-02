@@ -244,13 +244,10 @@ static void show_help()
               << "  mkdir <name>                 Create subdirectory\n"
               << "  cd    <path>                 Change directory\n"
               << "  creat <path> [mode]          Create file  (default mode 0777)\n"
-              << "  open  <path> [mode]          Open file    (default mode 1=read)\n"
-              << "  close <path>                 Close file\n"
               << "  read  <path> [size]          Read file   (default: all bytes)\n"
               << "  write [-o] <path> [text]     Append / overwrite file\n"
               << "  delete <path>                Delete file\n"
               << "  find  <name>                 Recursively search for name\n"
-              << "  format                       Format disk\n"
               << "  halt | exit | quit           Shutdown\n";
 
     if (g_core.users().current_user().u_uid == 0) {
@@ -275,11 +272,9 @@ static bool parse_uint(const std::string &text, unsigned long &value)
 
 void Shell::run()
 {
-    auto& dirs  = g_core.dirs();
-    auto& files = g_core.files();
-    auto& users = g_core.users();
-    auto& disk  = g_core.disk();
-    auto& blocks = g_core.blocks();
+    auto& dirs   = g_core.dirs();
+    auto& files  = g_core.files();
+    auto& users  = g_core.users();
     auto& icache = g_core.icache();
 
     std::string line;
@@ -461,43 +456,6 @@ void Shell::run()
                 std::cout << "  creat failed.\n";
             }
             unwind_path(depth);
-        }
-
-        else if (cmd == "open") {
-            if (args.size() < 2) {
-                std::cout << "Usage: open <filename> [mode]\n";
-                continue;
-            }
-            unsigned long mode = FREAD;
-            if (args.size() >= 3 && !parse_uint(args[2], mode)) continue;
-
-            uint16_t fd = files.open(users.current_user(), args[1].c_str(),
-                                     static_cast<uint16_t>(mode));
-            if (fd != static_cast<uint16_t>(-1)) {
-                bind_fd(args[1], fd);
-                std::cout << "  Opened '" << args[1] << "'  fd=" << fd
-                          << "  mode=" << std::oct << mode << std::dec << "\n";
-            } else {
-                std::cout << "  open failed: file not found or permission denied.\n";
-            }
-        }
-
-        // ============================================================
-        //  close  <name>
-        // ============================================================
-        else if (cmd == "close") {
-            if (args.size() < 2) {
-                std::cout << "Usage: close <filename>\n";
-                continue;
-            }
-            int fd = lookup_fd(args[1]);
-            if (fd < 0) {
-                std::cout << "  '" << args[1] << "' is not open.\n";
-                continue;
-            }
-            files.close(users.current_user(), static_cast<uint16_t>(fd));
-            unbind_fd(args[1]);
-            std::cout << "  Closed '" << args[1] << "'.\n";
         }
 
         // ============================================================
@@ -764,19 +722,6 @@ void Shell::run()
             while (dirs.cur_path_inode() && dirs.cur_path_inode()->i_ino != saved_ino) {
                 dirs.chdir("..");
             }
-        }
-
-        // ============================================================
-        //  format
-        // ============================================================
-        else if (cmd == "format") {
-            std::cout << "  Formatting virtual disk...\n";
-            s_path2fd.clear();
-            disk.format(blocks.superblock());
-            icache.iput(dirs.cur_path_inode());
-            dirs.set_cur_path_inode(nullptr);
-            disk.install(blocks.superblock());
-            std::cout << "  Format complete.  Please login again.\n";
         }
 
         // ============================================================

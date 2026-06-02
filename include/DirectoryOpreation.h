@@ -49,6 +49,9 @@ public:
     /** Load directory content from an inode's data block into m_dir. */
     void load_dir(inode* ino);
 
+    /** Clear the in-memory directory cache (called after format). */
+    void clear_cache() { m_dir_cache.clear(); }
+
 private:
     VirtualDisk&  m_disk;
     InodeCache&   m_icache;

@@ -37,6 +37,9 @@ public:
 
     hinode* hash_table() { return m_hash; }
 
+    /** Clear all cached inodes (called after format). */
+    void clear();
+
 private:
     VirtualDisk&  m_disk;
     BlockManager& m_blocks;

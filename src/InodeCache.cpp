@@ -21,6 +21,11 @@ InodeCache::InodeCache(VirtualDisk& disk, BlockManager& blocks)
 
 InodeCache::~InodeCache()
 {
+    clear();
+}
+
+void InodeCache::clear()
+{
     for (int i = 0; i < NHINO; i++) {
         inode* p = m_hash[i].i_forw;
         while (p) {
@@ -28,6 +33,7 @@ InodeCache::~InodeCache()
             free(p);
             p = next;
         }
+        m_hash[i].i_forw = nullptr;
     }
 }
 
