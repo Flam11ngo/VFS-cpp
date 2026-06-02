@@ -595,11 +595,7 @@ void Shell::run()
             bool use_editor = (args.size() <= text_start);
 
             if (use_editor) {
-                if (!overwrite) {
-                    text = editor_read(read_entire_file(fname));
-                } else {
-                    text = editor_read();
-                }
+                text = editor_read();     // always blank — mode handles position
             } else {
                 for (size_t i = text_start; i < args.size(); i++) {
                     if (i > text_start) text += ' ';
