@@ -7,7 +7,6 @@
  */
 #include "Editor.h"
 
-#include <cstdio>
 #include <iostream>
 #include <sstream>
 
@@ -41,20 +40,25 @@ int Editor::raw_getch()
 void Editor::redraw(const std::vector<std::string>& lines,
                     int cur_line, int cur_col)
 {
-#ifdef _WIN32
-    system("cls");
-#else
-    std::cout << "\033[2J\033[H";
-#endif
+    std::cout << "\033[2J\033[H";   // clear screen, cursor home (works on Win 10+ too)
     std::cout << "  === EDITOR  Esc=finish  arrows=navigate  Ctrl+D=quit ===\n";
+
     for (size_t i = 0; i < lines.size(); i++) {
         if ((int)i == cur_line)
             std::cout << "  \033[7m" << (i + 1) << "\033[0m| " << lines[i] << "\n";
         else
             std::cout << "  " << (i + 1) << "| " << lines[i] << "\n";
     }
+    // Status line
     std::cout << "\n  line " << (cur_line + 1) << "/" << lines.size()
               << "  col " << (cur_col + 1) << "  ";
+
+    // Move cursor to the current line, at the correct column
+    // Row = header(1) + cur_line + 1   (1-based)
+    // Col = prefix("  99| ") + cur_col  (1-based)
+    int prefix_w = 4;  // "  " + line number digit(s) + "| "
+    if (cur_line + 1 >= 10) prefix_w = 5;
+    std::cout << "\033[" << (cur_line + 2) << ";" << (prefix_w + cur_col + 1) << "H";
     std::cout.flush();
 }
 
