@@ -31,10 +31,6 @@ private:
     static void bind_fd(const std::string& path, int fd);
     static void unbind_fd(const std::string& path);
 
-    /** Editor mode: read lines from stdin until blank line, return joined. */
-    static std::string editor_read();
-    static std::string editor_read(const std::string& existing);
-
     /** Print the shell prompt (cwd + "$ "). */
     static void show_prompt();
 };

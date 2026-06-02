@@ -55,16 +55,6 @@ uint32_t Shell::file_size(int fd)
     return ino ? ino->di_size : 0;
 }
 
-std::string Shell::editor_read()
-{
-    return Editor::run("");
-}
-
-std::string Shell::editor_read(const std::string& existing)
-{
-    return Editor::run(existing);
-}
-
 // ====== Path helpers ======
 
 static void unwind_path(int depth);   // forward decl
@@ -521,104 +511,55 @@ void Shell::run()
         }
 
         // ============================================================
-        //  write  [-o]  <name>  [text ...]
+        //  write  <name>  [text ...]
         // ============================================================
-        else if (cmd == "write") {
-            // Parse flags
-            bool overwrite = false;
-            size_t name_idx = 1;
-            if (args.size() >= 2 && (args[1] == "-o" || args[1] == "--overwrite")) {
-                overwrite = true;
-                name_idx = 2;
-            }
-
-            if (args.size() <= name_idx) {
-                std::cout << "Usage: write [-o|--overwrite] <filename> [text ...]\n"
-                          << "  Default is append.  -o truncates before writing.\n";
+        else if (cmd == "write" || cmd == "edit") {
+            if (args.size() < 2) {
+                std::cout << "Usage: write <filename> [text ...]\n";
                 continue;
             }
 
-            const std::string orig_path = args[name_idx];
+            const std::string orig_path = args[1];
             auto [fname, depth] = resolve_path(orig_path);
-            int fd = lookup_fd(orig_path);
 
-            if (overwrite) {
-                // Overwrite mode: close if open, creat (truncates), rebind
-                if (fd >= 0) {
-                    files.close(users.current_user(), static_cast<uint16_t>(fd));
-                    unbind_fd(orig_path);
-                }
-                int cfd = files.creat(users.current_user(), fname.c_str(), DEFAULTMODE);
-                if (cfd < 0) {
-                    std::cout << "  Cannot overwrite '" << fname << "'.\n";
-                    continue;
-                }
-                fd = cfd;
-                bind_fd(orig_path, fd);
-                std::cout << "  (overwrite mode, fd=" << fd << ")\n";
-            } else {
-                // Append mode: always open fresh with FAPPEND
-                if (fd >= 0) {
-                    files.close(users.current_user(), static_cast<uint16_t>(fd));
-                    unbind_fd(orig_path);
-                }
-                uint16_t new_fd = files.open(users.current_user(), fname.c_str(),
-                                             FWRITE | FAPPEND);
-                if (new_fd == static_cast<uint16_t>(-1)) {
+            if (args.size() >= 3) {
+                // Inline text — append (preserves full-file editor semantics)
+                uint16_t fd = files.open(users.current_user(), fname.c_str(),
+                                         FWRITE | FAPPEND);
+                if (fd == static_cast<uint16_t>(-1)) {
                     int cfd = files.creat(users.current_user(), fname.c_str(), DEFAULTMODE);
-                    if (cfd < 0) {
-                        std::cout << "  Cannot open or create '" << fname << "'.\n";
-                        continue;
-                    }
-                    new_fd = static_cast<uint16_t>(cfd);
+                    if (cfd < 0) { std::cout << "  Cannot open '" << fname << "'.\n"; unwind_path(depth); continue; }
+                    fd = static_cast<uint16_t>(cfd);
                 }
-                fd = new_fd;
-                bind_fd(orig_path, fd);
-            }
 
-            // Reject directories
-            {
-                auto& u = users.current_user();
-                inode* ino = files.ofile_table()[u.u_ofile[fd]].f_inode;
-                if (ino && (ino->di_mode & DIDIR)) {
-                    std::cout << "  '" << orig_path << "' is a directory.\n";
-                    files.close(users.current_user(), static_cast<uint16_t>(fd));
-                    unbind_fd(orig_path);
-                    unwind_path(depth);
-                    continue;
-                }
-            }
-
-            // Gather text
-            std::string text;
-            size_t text_start = name_idx + 1;
-            bool use_editor = (args.size() <= text_start);
-
-            if (use_editor) {
-                text = editor_read();     // always blank — mode handles position
-            } else {
-                for (size_t i = text_start; i < args.size(); i++) {
-                    if (i > text_start) text += ' ';
+                std::string text;
+                for (size_t i = 2; i < args.size(); i++) {
+                    if (i > 2) text += ' ';
                     text += args[i];
                 }
-            }
 
-            // Ensure newline gap when appending to a file without trailing \n
-            if (!overwrite && !text.empty()) {
                 std::string existing = read_entire_file(fname);
                 if (!existing.empty() && existing.back() != '\n')
                     text.insert(0, "\n");
+
+                uint32_t n = files.write(users.current_user(), static_cast<uint32_t>(fd),
+                                         text.c_str(), static_cast<uint32_t>(text.size()));
+                std::cout << "  Written " << n << " bytes to '" << fname << "'.\n";
+                files.close(users.current_user(), static_cast<uint16_t>(fd));
+            } else {
+                // Full editor: load existing, user edits, creat+write back
+                std::string existing = read_entire_file(fname);
+                std::string text = Editor::run(existing);
+
+                int fd = files.creat(users.current_user(), fname.c_str(), DEFAULTMODE);
+                if (fd < 0) { std::cout << "  Cannot write '" << fname << "'.\n"; unwind_path(depth); continue; }
+                uint32_t n = files.write(users.current_user(), static_cast<uint32_t>(fd),
+                                         text.c_str(), static_cast<uint32_t>(text.size()));
+                std::cout << "  Written " << n << " bytes to '" << fname << "'.\n";
+                files.close(users.current_user(), static_cast<uint16_t>(fd));
             }
 
-            uint32_t n = files.write(users.current_user(),
-                                     static_cast<uint32_t>(fd),
-                                     text.c_str(),
-                                     static_cast<uint32_t>(text.size()));
-            std::cout << "  Written " << n << " bytes to '" << fname << "'.\n";
-
-            // Auto-close after write
-            files.close(users.current_user(), static_cast<uint16_t>(fd));
-            unbind_fd(orig_path);
+            unwind_path(depth);
         }
 
         // ============================================================

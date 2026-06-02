@@ -51,7 +51,13 @@ void Editor::redraw(const std::vector<std::string>& lines,
     }
     // Status line
     std::cout << "\n  line " << (cur_line + 1) << "/" << lines.size()
-              << "  col " << (cur_col + 1) << "  ";
+              << "  col " << (cur_col + 1) << "  \n";
+
+    // Move cursor to current line at correct column
+    // Row (1-based) = header(1) + cur_line + 1
+    // Col (1-based) = "  N| " prefix + cur_col
+    int prefix_w = (cur_line + 1 >= 10) ? 5 : 4;
+    std::cout << "\033[" << (cur_line + 2) << ";" << (prefix_w + cur_col + 1) << "H";
     std::cout.flush();
 }
 
