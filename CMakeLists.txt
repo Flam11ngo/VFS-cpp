@@ -18,6 +18,7 @@ set(VFS_SOURCES
     src/DirectoryOpreation.cpp
     src/FileOperation.cpp
     src/User.cpp
+    src/Editor.cpp
     src/Shell.cpp
     src/main.cpp
 )
@@ -61,6 +62,7 @@ set(VFS_LIB_SOURCES
     src/DirectoryOpreation.cpp
     src/FileOperation.cpp
     src/User.cpp
+    src/Editor.cpp
     src/Shell.cpp
 )
 

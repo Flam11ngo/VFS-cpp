@@ -207,4 +207,5 @@ extern VfsError g_errno;
 #include "DirectoryOpreation.h"
 #include "FileOperation.h"
 #include "User.h"
+#include "Editor.h"
 #include "Shell.h"

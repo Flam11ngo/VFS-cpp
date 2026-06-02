@@ -57,31 +57,12 @@ uint32_t Shell::file_size(int fd)
 
 std::string Shell::editor_read()
 {
-    return editor_read("");
+    return Editor::run("");
 }
 
 std::string Shell::editor_read(const std::string& existing)
 {
-    // Display existing content (read-only, for reference)
-    int ln = 1;
-    if (!existing.empty()) {
-        std::cout << "  --- file content ---\n";
-        std::istringstream iss(existing);
-        std::string line;
-        while (std::getline(iss, line))
-            std::cout << "  " << ln++ << "| " << line << "\n";
-    }
-    // Read new input only — existing is NOT included in result
-    std::cout << "  (enter text, blank line to finish)\n";
-    std::string buf, line;
-    while (true) {
-        std::cout << "  " << ln++ << "| ";
-        if (!std::getline(std::cin, line)) break;
-        if (line.empty()) break;
-        if (!buf.empty()) buf += '\n';
-        buf += line;
-    }
-    return buf;
+    return Editor::run(existing);
 }
 
 // ====== Path helpers ======
