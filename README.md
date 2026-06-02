@@ -1,6 +1,6 @@
 # A filesystem based on cpp
 
-default user( hard code in formatting )
+## default user( hard code in formatting )
 ```
 uid: 0
 pwd: root
@@ -12,7 +12,12 @@ pwd: root
 3. write
 4. read
 5. login
-6. logout <br>
+6. logout<br>
+7. help
 <--root only-->
-7. uls
-8. reg
+8. uls
+9. reg
+
+## feature
+* suitable for human operation
+* a text editor inside write
