@@ -143,6 +143,11 @@ std::string Editor::run(const std::string& existing)
         redraw(lines, cur_line, cur_col);
     }
 
+    // Move cursor back below editor before returning to shell
+    int total_rows = 1 + (int)lines.size() + 3;   // header + lines + blanks + status
+    std::cout << "\033[" << total_rows << ";1H\n";
+    std::cout.flush();
+
     // Join lines
     std::string result;
     for (size_t i = 0; i < lines.size(); i++) {

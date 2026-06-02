@@ -238,6 +238,8 @@ void FileOperator::delete_file(const char *filename)
         m_dirs.current_dir().entries[di].d_ino = DIEMPTY;
         dir& curdir = m_dirs.current_dir();
         curdir.entries.erase(curdir.entries.begin() + di);
+        // Sync cache so load_dir won't return stale data
+        m_dirs.sync_cache(m_dirs.cur_path_inode());
     }
 
     m_icache.iput(ino);

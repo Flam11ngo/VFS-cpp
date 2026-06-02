@@ -52,6 +52,11 @@ public:
     /** Clear the in-memory directory cache (called after format). */
     void clear_cache() { m_dir_cache.clear(); }
 
+    /** Sync current m_dir into the cache (call after direct entry edits). */
+    void sync_cache(inode* ino) {
+        if (ino) m_dir_cache[ino->i_ino] = m_dir.entries;
+    }
+
 private:
     VirtualDisk&  m_disk;
     InodeCache&   m_icache;
