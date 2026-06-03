@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "Core.h"
+#include "User.h"
 
 // ====== Static members ======
 
@@ -25,7 +26,7 @@ std::string Shell::s_cwd = "/";
 
 void Shell::show_prompt()
 {
-    std::cout << s_cwd << " $ ";
+    std::cout << "@"  << g_core.users().current_user().u_uid << ":~"<< s_cwd << " $ ";
 }
 
 int Shell::lookup_fd(const std::string& path)
@@ -79,15 +80,13 @@ static std::pair<std::string, int> resolve_path(const std::string& path)
     int depth = 0;
     for (size_t i = 0; i + 1 < parts.size(); i++) {
         if (parts[i] == "..") {
-            if (depth > 0) {
-                g_core.dirs().chdir("..");
-                depth--;
-                auto pos = Shell::s_cwd.rfind('/');
-                if (pos != std::string::npos && pos > 0)
-                    Shell::s_cwd.resize(pos);
-                else
-                    Shell::s_cwd = "/";
-            }
+            g_core.dirs().chdir("..");
+            depth--;
+            auto pos = Shell::s_cwd.rfind('/');
+            if (pos != std::string::npos && pos > 0)
+                Shell::s_cwd.resize(pos);
+            else
+                Shell::s_cwd = "/";
             continue;
         }
         if (parts[i] == ".") continue;
@@ -217,7 +216,7 @@ static void show_help()
               << "  creat <path> [mode]          Create file  (default mode 0777)\n"
               << "  read  <path> [size]          Read file   (default: all bytes)\n"
               << "  write [-o] <path> [text]     Append / overwrite file\n"
-              << "  delete <path>                Delete file\n"
+              << "  delete | rm <path>           Delete file\n"
               << "  find  <name>                 Recursively search for name\n"
               << "  halt | exit | quit           Shutdown\n";
 
@@ -522,6 +521,19 @@ void Shell::run()
             const std::string orig_path = args[1];
             auto [fname, depth] = resolve_path(orig_path);
 
+            // Reject directories — file operations only
+            unsigned int ni = dirs.namei(fname.c_str());
+            if (ni != (unsigned int)-1) {
+                inode* check = icache.iget(dirs.current_dir().entries[ni].d_ino);
+                if (check && (check->di_mode & DIDIR)) {
+                    std::cout << "  '" << fname << "' is a directory.\n";
+                    icache.iput(check);
+                    unwind_path(depth);
+                    continue;
+                }
+                if (check) icache.iput(check);
+            }
+
             if (args.size() >= 3) {
                 // Inline text — append (preserves full-file editor semantics)
                 uint16_t fd = files.open(users.current_user(), fname.c_str(),
@@ -563,9 +575,9 @@ void Shell::run()
         }
 
         // ============================================================
-        //  delete  <name>
+        //  delete/rm  <name>
         // ============================================================
-        else if (cmd == "delete") {
+        else if (cmd == "delete" || cmd == "rm") {
             if (args.size() < 2) {
                 std::cout << "Usage: delete <filename>\n";
                 continue;
